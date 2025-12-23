@@ -1,0 +1,35 @@
+[package]
+name = "weight-sensor-pump-controller"
+version = "0.1.0"
+edition = "2021"
+authors = ["Weight Sensor Controller Team"]
+description = "Raspberry Pi weight sensor and peristaltic pump controller"
+
+[dependencies]
+rppal = "0.14"
+thiserror = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+log = "0.4"
+env_logger = "0.10"
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+
+[dev-dependencies]
+quickcheck = "1.0"
+quickcheck_macros = "1.0"
+
+[build-dependencies]
+chrono = "0.4"
+
+# リリースビルド最適化
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+
+# コンパイル時設定
+[features]
+default = []
+
+# 環境変数からの設定（削除）

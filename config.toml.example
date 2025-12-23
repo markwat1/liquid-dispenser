@@ -1,0 +1,12 @@
+target_weight = 50.0
+
+[gpio]
+dt_pin = 5
+sck_pin = 6
+pump_pin = 18
+button_pin = 2
+
+[sensor]
+calibration_factor = 1.0
+moving_average_window = 5
+max_weight = 100.0

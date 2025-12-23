@@ -1,0 +1,32 @@
+# Dockerfile for cross-compilation to ARM64
+FROM ubuntu:22.04
+
+# 必要なパッケージをインストール
+RUN apt-get update && apt-get install -y \
+    curl \
+    build-essential \
+    gcc-aarch64-linux-gnu \
+    gcc-arm-linux-gnueabihf \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Rustをインストール
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# クロスコンパイル用のターゲットを追加
+RUN rustup target add aarch64-unknown-linux-gnu
+RUN rustup target add armv7-unknown-linux-gnueabihf
+
+# 作業ディレクトリを設定
+WORKDIR /workspace
+
+# Cargoの設定ファイルをコピー
+COPY .cargo/config.toml .cargo/config.toml
+
+# ソースコードをコピー
+COPY . .
+
+# ビルドスクリプト
+CMD ["make", "build"]
