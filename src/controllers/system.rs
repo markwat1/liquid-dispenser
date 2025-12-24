@@ -1,4 +1,4 @@
-use crate::controllers::{WeightSensorController, PumpController, ButtonController};
+use crate::controllers::{WeightSensorController, MotorController, ButtonController};
 use crate::errors::SystemError;
 use crate::models::{SystemConfig, SystemState, WeightReading};
 use std::time::{Duration, Instant};
@@ -8,7 +8,7 @@ use log::{info, warn, error, debug};
 /// システム全体を制御するコントローラ
 pub struct SystemController {
     weight_sensor: WeightSensorController,
-    pump: PumpController,
+    motor: MotorController,
     button: ButtonController,
     config: SystemConfig,
     state: SystemState,
@@ -36,12 +36,12 @@ impl SystemController {
             config.moving_average_window,
         )?;
         
-        let pump = PumpController::new(config.pump_pin)?;
+        let motor = MotorController::new(config.relay_a_pin, config.relay_b_pin)?;
         let button = ButtonController::new(config.button_pin)?;
         
         let mut controller = Self {
             weight_sensor,
-            pump,
+            motor,
             button,
             config,
             state: SystemState::Idle,
@@ -69,7 +69,8 @@ impl SystemController {
         let pins = vec![
             (config.dt_pin, "HX711 DT"),
             (config.sck_pin, "HX711 SCK"),
-            (config.pump_pin, "Pump Control"),
+            (config.relay_a_pin, "Motor Relay A"),
+            (config.relay_b_pin, "Motor Relay B"),
             (config.button_pin, "Button"),
         ];
         
@@ -100,12 +101,21 @@ impl SystemController {
         }
         
         {
-            // ポンプ制御ピン（出力）をLOWに設定
-            let mut pump_pin = gpio.get(config.pump_pin)
+            // リレーA制御ピン（出力）をLOWに設定
+            let mut relay_a_pin = gpio.get(config.relay_a_pin)
                 .map_err(|e| SystemError::Gpio(e.to_string()))?
                 .into_output();
-            pump_pin.set_low();
-            debug!("Pump control pin (GPIO {}) set to LOW", config.pump_pin);
+            relay_a_pin.set_low();
+            debug!("Relay A control pin (GPIO {}) set to LOW", config.relay_a_pin);
+        }
+        
+        {
+            // リレーB制御ピン（出力）をLOWに設定
+            let mut relay_b_pin = gpio.get(config.relay_b_pin)
+                .map_err(|e| SystemError::Gpio(e.to_string()))?
+                .into_output();
+            relay_b_pin.set_low();
+            debug!("Relay B control pin (GPIO {}) set to LOW", config.relay_b_pin);
         }
         
         // 入力ピンの設定確認
@@ -152,10 +162,10 @@ impl SystemController {
             }
         }
         
-        // 4. ポンプの初期状態確認
-        if self.pump.is_running() {
-            warn!("Pump was running at startup, stopping");
-            self.pump.emergency_stop();
+        // 4. モーターの初期状態確認
+        if self.motor.is_running() {
+            warn!("Motor was running at startup, stopping");
+            self.motor.emergency_stop();
         }
         
         // 5. ボタンの初期状態確認
@@ -173,15 +183,15 @@ impl SystemController {
     pub fn shutdown_sequence(&mut self) -> Result<(), SystemError> {
         info!("Starting system shutdown sequence");
         
-        // 1. ポンプを安全に停止
-        if self.pump.is_running() {
-            info!("Stopping pump for shutdown");
-            match self.pump.safe_stop(Duration::from_secs(5)) {
-                Ok(()) => info!("Pump stopped successfully"),
+        // 1. モーターを安全に停止
+        if self.motor.is_running() {
+            info!("Stopping motor for shutdown");
+            match self.motor.safe_stop(Duration::from_secs(5)) {
+                Ok(()) => info!("Motor stopped successfully"),
                 Err(e) => {
-                    warn!("Failed to stop pump gracefully: {}", e);
-                    self.pump.emergency_stop();
-                    info!("Pump emergency stopped");
+                    warn!("Failed to stop motor gracefully: {}", e);
+                    self.motor.emergency_stop();
+                    info!("Motor emergency stopped");
                 }
             }
         }
@@ -215,7 +225,7 @@ impl SystemController {
         
         // 各コンポーネントの健全性をチェック
         self.weight_sensor.health_check()?;
-        self.pump.health_check()?;
+        self.motor.health_check()?;
         self.button.health_check()?;
         
         debug!("System health check passed");
@@ -295,7 +305,7 @@ impl SystemController {
         
         // 状態に応じた処理
         match &self.state {
-            SystemState::Pumping => {
+            SystemState::Forward => {
                 self.check_target_weight()?;
             }
             SystemState::Stopping => {
@@ -317,10 +327,10 @@ impl SystemController {
         
         match &self.state {
             SystemState::Idle => {
-                self.start_pumping()?;
+                self.start_sequence()?;
             }
-            SystemState::Measuring | SystemState::Pumping => {
-                self.stop_pumping()?;
+            SystemState::WeightStabilizing | SystemState::Forward | SystemState::Reverse => {
+                self.stop_sequence()?;
             }
             SystemState::Stopping => {
                 // 停止処理中は無視
@@ -330,37 +340,36 @@ impl SystemController {
                 // エラー状態からリセット
                 self.reset_system()?;
             }
+            _ => {}
         }
         
         Ok(())
     }
     
-    /// ポンプ動作を開始
-    fn start_pumping(&mut self) -> Result<(), SystemError> {
-        info!("Starting pump operation");
+    /// 制御シーケンスを開始
+    fn start_sequence(&mut self) -> Result<(), SystemError> {
+        info!("Starting control sequence");
         
         // 重量センサーをリセット
         self.weight_sensor.reset_filter();
         
-        // ポンプを開始
-        self.pump.start()?;
-        
-        self.state = SystemState::Pumping;
+        // 重量安定化状態に遷移
+        self.state = SystemState::WeightStabilizing;
         self.start_time = Some(Instant::now());
         self.error_count = 0;
         
-        info!("Pump started successfully");
+        info!("Weight stabilization started");
         Ok(())
     }
     
-    /// ポンプ動作を停止
-    fn stop_pumping(&mut self) -> Result<(), SystemError> {
-        info!("Stopping pump operation");
+    /// 制御シーケンスを停止
+    fn stop_sequence(&mut self) -> Result<(), SystemError> {
+        info!("Stopping control sequence");
         
         self.state = SystemState::Stopping;
         
-        // ポンプを安全に停止
-        self.pump.safe_stop(Duration::from_secs(5))?;
+        // モーターを安全に停止
+        self.motor.safe_stop(Duration::from_secs(5))?;
         
         self.finalize_stop()?;
         
@@ -373,7 +382,7 @@ impl SystemController {
         self.start_time = None;
         
         if let Some(reading) = &self.last_weight_reading {
-            info!("Pumping completed. Final weight: {:.1}g", reading.value);
+            info!("Control sequence completed. Final weight: {:.1}g", reading.value);
         }
         
         Ok(())
@@ -401,7 +410,7 @@ impl SystemController {
             if reading.is_stable && reading.value >= self.config.target_weight {
                 info!("Target weight reached: {:.1}g >= {:.1}g", 
                       reading.value, self.config.target_weight);
-                self.stop_pumping()?;
+                self.stop_sequence()?;
             }
         }
         
@@ -440,9 +449,9 @@ impl SystemController {
     fn enter_error_state(&mut self, error: SystemError) -> Result<(), SystemError> {
         error!("Entering error state: {}", error);
         
-        // ポンプを緊急停止
-        if self.pump.is_running() {
-            self.pump.emergency_stop();
+        // モーターを緊急停止
+        if self.motor.is_running() {
+            self.motor.emergency_stop();
         }
         
         self.state = SystemState::Error(error.to_string());
@@ -455,9 +464,9 @@ impl SystemController {
     fn reset_system(&mut self) -> Result<(), SystemError> {
         info!("Resetting system");
         
-        // ポンプを停止
-        if self.pump.is_running() {
-            self.pump.emergency_stop();
+        // モーターを停止
+        if self.motor.is_running() {
+            self.motor.emergency_stop();
         }
         
         // 重量センサーをリセット
@@ -513,7 +522,7 @@ impl SystemController {
         SystemStatistics {
             state: self.state.clone(),
             error_count: self.error_count,
-            pump_runtime: self.pump.total_runtime(),
+            motor_runtime: self.motor.total_runtime(),
             button_press_count: self.button.press_count(),
             current_weight: self.last_weight_reading.as_ref().map(|r| r.value),
             target_weight: self.config.target_weight,
@@ -528,7 +537,7 @@ impl SystemController {
 pub struct SystemStatistics {
     pub state: SystemState,
     pub error_count: u32,
-    pub pump_runtime: Duration,
+    pub motor_runtime: Duration,
     pub button_press_count: u32,
     pub current_weight: Option<f32>,
     pub target_weight: f32,
@@ -538,8 +547,8 @@ pub struct SystemStatistics {
 // Drop実装で安全にリソースを解放
 impl Drop for SystemController {
     fn drop(&mut self) {
-        if self.pump.is_running() {
-            self.pump.emergency_stop();
+        if self.motor.is_running() {
+            self.motor.emergency_stop();
         }
         info!("System controller dropped safely");
     }

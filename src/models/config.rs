@@ -16,7 +16,8 @@ pub struct ConfigFile {
 pub struct GpioConfig {
     pub dt_pin: Option<u8>,
     pub sck_pin: Option<u8>,
-    pub pump_pin: Option<u8>,
+    pub relay_a_pin: Option<u8>,
+    pub relay_b_pin: Option<u8>,
     pub button_pin: Option<u8>,
 }
 
@@ -64,7 +65,8 @@ impl ConfigFile {
             gpio: Some(GpioConfig {
                 dt_pin: Some(5),
                 sck_pin: Some(6),
-                pump_pin: Some(18),
+                relay_a_pin: Some(18),
+                relay_b_pin: Some(19),
                 button_pin: Some(2),
             }),
             sensor: Some(SensorConfig {
@@ -109,8 +111,11 @@ impl SystemConfig {
             if let Some(pin) = gpio.sck_pin {
                 config.sck_pin = pin;
             }
-            if let Some(pin) = gpio.pump_pin {
-                config.pump_pin = pin;
+            if let Some(pin) = gpio.relay_a_pin {
+                config.relay_a_pin = pin;
+            }
+            if let Some(pin) = gpio.relay_b_pin {
+                config.relay_b_pin = pin;
             }
             if let Some(pin) = gpio.button_pin {
                 config.button_pin = pin;
@@ -169,9 +174,15 @@ impl SystemConfig {
             }
         }
         
-        if let Ok(pin) = std::env::var("PUMP_PIN") {
+        if let Ok(pin) = std::env::var("RELAY_A_PIN") {
             if let Ok(pin) = pin.parse::<u8>() {
-                config.pump_pin = pin;
+                config.relay_a_pin = pin;
+            }
+        }
+        
+        if let Ok(pin) = std::env::var("RELAY_B_PIN") {
+            if let Ok(pin) = pin.parse::<u8>() {
+                config.relay_b_pin = pin;
             }
         }
         

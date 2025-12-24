@@ -2,7 +2,7 @@
 
 ## 概要
 
-Raspberry Pi上で動作する重量センサー制御システムは、HX711 ADコンバータを使用した重量測定と蠕動ポンプの自動制御を組み合わせた液体計量装置です。システムはRust言語で実装され、クロスコンパイルによってARM64バイナリとして配布されます。
+Raspberry Pi上で動作する重量センサー制御システムは、HX711 ADコンバータを使用した重量測定と2つのリレーによるモーター制御を組み合わせた液体計量装置です。システムはRust言語で実装され、クロスコンパイルによってARM64バイナリとして配布されます。モーターは正転・逆転が可能で、重量安定化処理、目標重量到達後の自動逆転処理を含む完全自動化された計量プロセスを提供します。
 
 ## アーキテクチャ
 
@@ -14,7 +14,7 @@ Raspberry Pi上で動作する重量センサー制御システムは、HX711 AD
 │  (Main Control Logic & State)       │
 ├─────────────────────────────────────┤
 │        Hardware Abstraction        │
-│  (GPIO, HX711, Pump, Button)       │
+│  (GPIO, HX711, Motor, Button)       │
 ├─────────────────────────────────────┤
 │        System Layer                 │
 │  (Linux GPIO, Cross-compiled)       │
@@ -23,9 +23,10 @@ Raspberry Pi上で動作する重量センサー制御システムは、HX711 AD
 
 ### アーキテクチャの特徴
 
-- **非同期処理**: 重量監視、ボタン監視、ポンプ制御を並行実行
-- **状態管理**: 明確な状態遷移による安全な動作制御
+- **非同期処理**: 重量監視、ボタン監視、モーター制御を並行実行
+- **状態管理**: 明確な状態遷移による安全な動作制御（重量安定化、正転、逆転フェーズ）
 - **エラー処理**: 通信エラーや範囲外値に対する堅牢な処理
+- **安全制御**: リレーの排他制御による安全なモーター動作
 - **クロスプラットフォーム**: 開発環境とターゲット環境の分離
 
 ## コンポーネントとインターフェース
@@ -49,20 +50,31 @@ impl WeightSensorController {
 }
 ```
 
-### 2. PumpController
-蠕動ポンプのON/OFF制御を管理します。
+### 2. MotorController
+2つのリレーを使用してモーターの正転・逆転・停止を制御します。
 
 ```rust
-pub struct PumpController {
-    control_pin: u8,
-    is_running: bool,
+pub struct MotorController {
+    relay_a_pin: u8,  // 正転用リレー
+    relay_b_pin: u8,  // 逆転用リレー
+    current_state: MotorState,
 }
 
-impl PumpController {
-    pub fn new(control_pin: u8) -> Self;
-    pub fn start(&mut self) -> Result<(), PumpError>;
-    pub fn stop(&mut self) -> Result<(), PumpError>;
-    pub fn is_running(&self) -> bool;
+#[derive(Debug, Clone, PartialEq)]
+pub enum MotorState {
+    Stopped,    // 両リレーOFF
+    Forward,    // Relay A: ON, Relay B: OFF
+    Reverse,    // Relay A: OFF, Relay B: ON
+}
+
+impl MotorController {
+    pub fn new(relay_a_pin: u8, relay_b_pin: u8) -> Self;
+    pub fn start_forward(&mut self) -> Result<(), MotorError>;
+    pub fn start_reverse(&mut self) -> Result<(), MotorError>;
+    pub fn stop(&mut self) -> Result<(), MotorError>;
+    pub fn emergency_stop(&mut self);
+    pub fn current_state(&self) -> &MotorState;
+    pub fn is_safe_state(&self) -> bool;  // 両リレーが同時ONでないことを確認
 }
 ```
 
@@ -84,24 +96,37 @@ impl ButtonController {
 ```
 
 ### 4. SystemController
-全体の制御ロジックと状態管理を行います。
+全体の制御ロジックと状態管理を行います。重量安定化、正転動作、逆転処理の完全自動化を実現します。
 
 ```rust
 pub struct SystemController {
     weight_sensor: WeightSensorController,
-    pump: PumpController,
+    motor: MotorController,
     button: ButtonController,
     target_weight: f32,
     state: SystemState,
+    base_weight: Option<f32>,  // 安定化後の基準重量
+    stabilization_timer: Option<Instant>,
+    reverse_timer: Option<Instant>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SystemState {
     Idle,
-    Measuring,
-    Pumping,
-    Stopping,
+    WeightStabilizing,  // 3秒間の重量安定化中
+    Forward,           // 正転動作中
+    TargetReached,     // 目標重量到達、正転停止
+    Reverse,           // 3秒間の逆転動作中
+    Completed,         // 処理完了
     Error(String),
+}
+
+impl SystemController {
+    pub fn start_sequence(&mut self) -> Result<(), SystemError>;
+    pub fn process_stabilization(&mut self) -> Result<(), SystemError>;
+    pub fn process_forward_operation(&mut self) -> Result<(), SystemError>;
+    pub fn process_reverse_operation(&mut self) -> Result<(), SystemError>;
+    pub fn check_weight_stability(&self, readings: &[f32]) -> bool;
 }
 ```
 
@@ -124,10 +149,33 @@ pub struct SystemConfig {
     pub target_weight: f32,
     pub dt_pin: u8,
     pub sck_pin: u8,
-    pub pump_pin: u8,
+    pub relay_a_pin: u8,      // 正転用リレー
+    pub relay_b_pin: u8,      // 逆転用リレー
     pub button_pin: u8,
     pub calibration_factor: f32,
     pub moving_average_window: usize,
+    pub stabilization_duration: Duration,  // 重量安定化時間（3秒）
+    pub reverse_duration: Duration,        // 逆転動作時間（3秒）
+    pub weight_tolerance: f32,             // 重量安定判定の許容範囲
+}
+```
+
+### 制御シーケンス
+```rust
+#[derive(Debug, Clone)]
+pub struct ControlSequence {
+    pub phase: SequencePhase,
+    pub start_time: Instant,
+    pub weight_readings: Vec<f32>,  // 安定化判定用
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SequencePhase {
+    WaitingForStart,
+    Stabilizing,
+    ForwardOperation,
+    ReverseOperation,
+    Completed,
 }
 ```
 
@@ -135,7 +183,8 @@ pub struct SystemConfig {
 推奨されるGPIO接続：
 - HX711 DT端子 → GPIO 5
 - HX711 SCK端子 → GPIO 6
-- ポンプ制御 → GPIO 18
+- リレーA（正転） → GPIO 18
+- リレーB（逆転） → GPIO 19
 - ボタン → GPIO 2 (プルアップ抵抗付き)
 
 ## 正確性プロパティ
@@ -146,37 +195,39 @@ pub struct SystemConfig {
 
 分析したプロパティを確認し、冗長性を排除します：
 
-- プロパティ1（ボタン押下による開始）とプロパティ4（ボタン押下による停止）は、ボタン処理の包括的なプロパティに統合可能
-- プロパティ2（注入開始時のポンプ動作）とプロパティ3（目標重量でのポンプ停止）は、ポンプ制御の包括的なプロパティに統合可能
-- プロパティ11（測定精度）とプロパティ12（ノイズフィルタ）は、重量測定の包括的なプロパティに統合可能
+- 重量安定化関連のプロパティ（1.1, 1.2, 5.1-5.5）は包括的な安定化プロパティに統合
+- モーター制御シーケンス（1.3, 1.5, 1.6, 1.7）は包括的なシーケンス制御プロパティに統合
+- リレー制御（2.1-2.5）は包括的なリレー制御プロパティに統合
+- 安全機能（1.8, 4.4, 4.5）は包括的な安全プロパティに統合
+- エラーハンドリング（2.4, 7.4, 7.5）は包括的なエラー処理プロパティに統合
 
-### プロパティ 1: ボタン制御の一貫性
-*任意の*システム状態において、Control_Buttonを押下した場合、システムは適切な状態遷移を実行する（待機中なら開始、動作中なら停止）
-**検証対象: 要件 1.1, 1.4**
+### プロパティ 1: 重量安定化処理の一貫性
+*任意の*重量測定開始時において、システムは3秒間継続的に測定を実行し、変動が許容範囲内の場合は安定と判定し、その値を基準重量として設定する
+**検証対象: 要件 1.1, 1.2, 5.1, 5.2, 5.4, 5.5**
 
-### プロパティ 2: ポンプ制御の自動化
-*任意の*重量測定値において、測定値が目標重量に達した場合、Peristaltic_Pumpは自動的に停止し、測定値が目標重量未満の場合は動作を継続する
-**検証対象: 要件 1.2, 1.3**
+### プロパティ 2: モーター制御シーケンスの自動化
+*任意の*制御シーケンスにおいて、基準重量設定完了後は正転開始、目標重量到達時は正転停止、その後3秒間の逆転実行、逆転完了後は完全停止の順序で実行される
+**検証対象: 要件 1.3, 1.5, 1.6, 1.7**
 
-### プロパティ 3: 重量監視の継続性
-*任意の*システム状態において、Weight_Sensor_Systemは継続的に重量を監視し、1g精度で0-100g範囲の測定値を提供する
-**検証対象: 要件 1.5, 2.5, 5.1**
+### プロパティ 3: リレー制御の安全性
+*任意の*リレー制御において、両リレーOFFで停止、リレーA単独ONで正転、リレーB単独ONで逆転、両リレー同時ONでエラー検知が実行される
+**検証対象: 要件 2.1, 2.2, 2.3, 2.4, 2.5**
 
-### プロパティ 4: GPIO初期化の安全性
-*任意の*システム起動時において、すべてのGPIO_Pinは安全な初期状態に設定され、各デバイスとの通信が確立される
-**検証対象: 要件 3.4, 3.5**
+### プロパティ 4: 重量監視の継続性
+*任意の*システム動作中において、重量センサーは1g精度で継続的に監視を実行し、ノイズに対しては移動平均フィルタで安定化処理を適用する
+**検証対象: 要件 1.4, 7.1, 7.2**
 
-### プロパティ 5: クロスコンパイルの一貫性
-*任意の*目標重量設定において、コンパイル時に指定された値がバイナリに正しく組み込まれ、依存関係なしに動作する
-**検証対象: 要件 4.3, 4.4**
+### プロパティ 5: 緊急停止の即応性
+*任意の*システム状態において、ボタン押下による緊急停止要求に対してモーターは即座に停止し、システム起動時は安全な初期状態で開始される
+**検証対象: 要件 1.8, 4.4, 4.5**
 
-### プロパティ 6: ノイズフィルタリングの安定性
-*任意の*ノイズを含む重量データにおいて、移動平均フィルタが適用され、安定した測定値が出力される
-**検証対象: 要件 5.2, 5.3**
+### プロパティ 6: エラーハンドリングの堅牢性
+*任意の*エラー条件において、測定範囲外の値や通信エラーに対してシステムは適切なエラー状態を報告し、再試行処理を実行する
+**検証対象: 要件 7.4, 7.5**
 
-### プロパティ 7: エラーハンドリングの堅牢性
-*任意の*測定範囲外の値や通信エラーにおいて、システムは適切なエラー状態を報告し、再試行処理を実行する
-**検証対象: 要件 5.4, 5.5**
+### プロパティ 7: 重量測定範囲の妥当性
+*任意の*重量センサー設定において、0-100gの範囲で正確な測定が実行され、コンパイル時に指定された目標重量がバイナリに正しく組み込まれる
+**検証対象: 要件 3.5, 6.4**
 
 ## エラーハンドリング
 
@@ -187,8 +238,8 @@ pub enum SystemError {
     #[error("Sensor error: {0}")]
     Sensor(#[from] SensorError),
     
-    #[error("Pump error: {0}")]
-    Pump(#[from] PumpError),
+    #[error("Motor error: {0}")]
+    Motor(#[from] MotorError),
     
     #[error("Button error: {0}")]
     Button(#[from] ButtonError),
@@ -198,6 +249,30 @@ pub enum SystemError {
     
     #[error("Configuration error: {0}")]
     Config(String),
+    
+    #[error("Relay safety error: {0}")]
+    RelaySafety(String),
+    
+    #[error("Sequence error: {0}")]
+    Sequence(String),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum MotorError {
+    #[error("Relay control error: {0}")]
+    RelayControl(String),
+    
+    #[error("Unsafe relay state: both relays active")]
+    UnsafeState,
+    
+    #[error("Motor start failure")]
+    StartFailure,
+    
+    #[error("Motor stop failure")]
+    StopFailure,
+    
+    #[error("GPIO error: {0}")]
+    Gpio(String),
 }
 ```
 
@@ -206,6 +281,8 @@ pub enum SystemError {
 2. **範囲外値**: エラーログ出力後、前回の有効値を使用
 3. **ハードウェア障害**: 安全停止後、エラー状態で待機
 4. **設定エラー**: 起動時にバリデーション、不正値は既定値で代替
+5. **リレー安全エラー**: 両リレー同時ON検知時は即座に緊急停止
+6. **シーケンスエラー**: 不正な状態遷移時は安全状態に復帰
 
 ## テスト戦略
 
@@ -213,11 +290,15 @@ pub enum SystemError {
 - 各コンポーネントの基本機能テスト
 - エラー条件での動作確認
 - GPIO操作のモックテスト
+- リレー制御の安全性テスト
+- 重量安定化ロジックのテスト
 
 ### プロパティベーステスト
 - QuickCheckライブラリを使用
 - 各プロパティを最低100回実行
 - ランダムな入力値での動作検証
+- モーター制御シーケンスの検証
+- 重量安定化処理の検証
 
 **プロパティベーステストの要件**:
 - Rustの`quickcheck`クレートを使用
@@ -229,3 +310,5 @@ pub enum SystemError {
 - システム全体の状態遷移テスト
 - ハードウェアシミュレータを使用した動作確認
 - クロスコンパイル後のバイナリテスト
+- 完全な制御シーケンスのテスト（安定化→正転→逆転→停止）
+- 緊急停止機能のテスト

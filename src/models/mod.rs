@@ -1,9 +1,36 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub mod config;
 
 #[cfg(test)]
 mod tests;
+
+/// モーター状態
+#[derive(Debug, Clone, PartialEq)]
+pub enum MotorState {
+    /// 停止状態（両リレーOFF）
+    Stopped,
+    /// 正転状態（Relay A: ON, Relay B: OFF）
+    Forward,
+    /// 逆転状態（Relay A: OFF, Relay B: ON）
+    Reverse,
+}
+
+impl MotorState {
+    /// 状態の文字列表現
+    pub fn as_str(&self) -> &str {
+        match self {
+            MotorState::Stopped => "Stopped",
+            MotorState::Forward => "Forward",
+            MotorState::Reverse => "Reverse",
+        }
+    }
+    
+    /// 状態が動作中かどうか
+    pub fn is_running(&self) -> bool {
+        matches!(self, MotorState::Forward | MotorState::Reverse)
+    }
+}
 
 /// 重量測定データ
 #[derive(Debug, Clone)]
@@ -48,14 +75,22 @@ pub struct SystemConfig {
     pub dt_pin: u8,
     /// HX711 SCK端子のGPIOピン番号
     pub sck_pin: u8,
-    /// ポンプ制御のGPIOピン番号
-    pub pump_pin: u8,
+    /// リレーA（正転）のGPIOピン番号
+    pub relay_a_pin: u8,
+    /// リレーB（逆転）のGPIOピン番号
+    pub relay_b_pin: u8,
     /// ボタンのGPIOピン番号
     pub button_pin: u8,
     /// 重量センサーの校正係数
     pub calibration_factor: f32,
     /// 移動平均のウィンドウサイズ
     pub moving_average_window: usize,
+    /// 重量安定化時間（3秒）
+    pub stabilization_duration: Duration,
+    /// 逆転動作時間（3秒）
+    pub reverse_duration: Duration,
+    /// 重量安定判定の許容範囲
+    pub weight_tolerance: f32,
 }
 
 impl Default for SystemConfig {
@@ -64,10 +99,14 @@ impl Default for SystemConfig {
             target_weight: 50.0,
             dt_pin: 5,
             sck_pin: 6,
-            pump_pin: 18,
+            relay_a_pin: 18,
+            relay_b_pin: 19,
             button_pin: 2,
             calibration_factor: 1.0,
             moving_average_window: 5,
+            stabilization_duration: Duration::from_secs(3),
+            reverse_duration: Duration::from_secs(3),
+            weight_tolerance: 0.5,
         }
     }
 }
@@ -93,10 +132,14 @@ impl SystemConfig {
             target_weight: env!("COMPILED_TARGET_WEIGHT").parse().unwrap_or(50.0),
             dt_pin: env!("COMPILED_DT_PIN").parse().unwrap_or(5),
             sck_pin: env!("COMPILED_SCK_PIN").parse().unwrap_or(6),
-            pump_pin: env!("COMPILED_PUMP_PIN").parse().unwrap_or(18),
+            relay_a_pin: env!("COMPILED_RELAY_A_PIN").parse().unwrap_or(18),
+            relay_b_pin: env!("COMPILED_RELAY_B_PIN").parse().unwrap_or(19),
             button_pin: env!("COMPILED_BUTTON_PIN").parse().unwrap_or(2),
             calibration_factor: env!("COMPILED_CALIBRATION_FACTOR").parse().unwrap_or(1.0),
             moving_average_window: env!("COMPILED_MOVING_AVERAGE_WINDOW").parse().unwrap_or(5),
+            stabilization_duration: Duration::from_secs(3),
+            reverse_duration: Duration::from_secs(3),
+            weight_tolerance: 0.5,
         }
     }
     
@@ -124,9 +167,15 @@ impl SystemConfig {
             }
         }
         
-        if let Ok(pin) = std::env::var("PUMP_PIN") {
+        if let Ok(pin) = std::env::var("RELAY_A_PIN") {
             if let Ok(pin) = pin.parse::<u8>() {
-                config.pump_pin = pin;
+                config.relay_a_pin = pin;
+            }
+        }
+        
+        if let Ok(pin) = std::env::var("RELAY_B_PIN") {
+            if let Ok(pin) = pin.parse::<u8>() {
+                config.relay_b_pin = pin;
             }
         }
         
@@ -172,7 +221,7 @@ impl SystemConfig {
         }
         
         // GPIO番号の重複チェック
-        let pins = vec![self.dt_pin, self.sck_pin, self.pump_pin, self.button_pin];
+        let pins = vec![self.dt_pin, self.sck_pin, self.relay_a_pin, self.relay_b_pin, self.button_pin];
         let mut unique_pins = pins.clone();
         unique_pins.sort();
         unique_pins.dedup();
@@ -190,23 +239,32 @@ impl SystemConfig {
 pub enum SystemState {
     /// 待機状態
     Idle,
-    /// 重量測定中
-    #[allow(dead_code)]
-    Measuring,
-    /// ポンプ動作中
-    Pumping,
+    /// 重量安定化中（3秒間）
+    WeightStabilizing,
+    /// 正転動作中
+    Forward,
+    /// 目標重量到達、正転停止
+    TargetReached,
+    /// 逆転動作中（3秒間）
+    Reverse,
+    /// 処理完了
+    Completed,
     /// 停止処理中
     Stopping,
     /// エラー状態
-    #[allow(dead_code)]
     Error(String),
 }
 
 impl SystemState {
     /// 状態が動作中かどうか
-    #[allow(dead_code)]
     pub fn is_active(&self) -> bool {
-        matches!(self, SystemState::Measuring | SystemState::Pumping | SystemState::Stopping)
+        matches!(self, 
+            SystemState::WeightStabilizing | 
+            SystemState::Forward | 
+            SystemState::TargetReached |
+            SystemState::Reverse | 
+            SystemState::Stopping
+        )
     }
     
     /// 状態がエラーかどうか
@@ -220,8 +278,11 @@ impl SystemState {
     pub fn as_str(&self) -> &str {
         match self {
             SystemState::Idle => "Idle",
-            SystemState::Measuring => "Measuring",
-            SystemState::Pumping => "Pumping",
+            SystemState::WeightStabilizing => "WeightStabilizing",
+            SystemState::Forward => "Forward",
+            SystemState::TargetReached => "TargetReached",
+            SystemState::Reverse => "Reverse",
+            SystemState::Completed => "Completed",
             SystemState::Stopping => "Stopping",
             SystemState::Error(_) => "Error",
         }

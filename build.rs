@@ -11,7 +11,8 @@ fn main() {
     // 他の設定値も同様に処理
     let dt_pin = env::var("DT_PIN").unwrap_or_else(|_| "5".to_string());
     let sck_pin = env::var("SCK_PIN").unwrap_or_else(|_| "6".to_string());
-    let pump_pin = env::var("PUMP_PIN").unwrap_or_else(|_| "18".to_string());
+    let relay_a_pin = env::var("RELAY_A_PIN").unwrap_or_else(|_| "18".to_string());
+    let relay_b_pin = env::var("RELAY_B_PIN").unwrap_or_else(|_| "19".to_string());
     let button_pin = env::var("BUTTON_PIN").unwrap_or_else(|_| "2".to_string());
     let calibration_factor = env::var("CALIBRATION_FACTOR")
         .unwrap_or_else(|_| "1.0".to_string());
@@ -20,7 +21,8 @@ fn main() {
     
     println!("cargo:rustc-env=COMPILED_DT_PIN={}", dt_pin);
     println!("cargo:rustc-env=COMPILED_SCK_PIN={}", sck_pin);
-    println!("cargo:rustc-env=COMPILED_PUMP_PIN={}", pump_pin);
+    println!("cargo:rustc-env=COMPILED_RELAY_A_PIN={}", relay_a_pin);
+    println!("cargo:rustc-env=COMPILED_RELAY_B_PIN={}", relay_b_pin);
     println!("cargo:rustc-env=COMPILED_BUTTON_PIN={}", button_pin);
     println!("cargo:rustc-env=COMPILED_CALIBRATION_FACTOR={}", calibration_factor);
     println!("cargo:rustc-env=COMPILED_MOVING_AVERAGE_WINDOW={}", moving_average_window);
@@ -33,7 +35,8 @@ fn main() {
     println!("cargo:rerun-if-env-changed=TARGET_WEIGHT");
     println!("cargo:rerun-if-env-changed=DT_PIN");
     println!("cargo:rerun-if-env-changed=SCK_PIN");
-    println!("cargo:rerun-if-env-changed=PUMP_PIN");
+    println!("cargo:rerun-if-env-changed=RELAY_A_PIN");
+    println!("cargo:rerun-if-env-changed=RELAY_B_PIN");
     println!("cargo:rerun-if-env-changed=BUTTON_PIN");
     println!("cargo:rerun-if-env-changed=CALIBRATION_FACTOR");
     println!("cargo:rerun-if-env-changed=MOVING_AVERAGE_WINDOW");

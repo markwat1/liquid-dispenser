@@ -12,7 +12,8 @@ mod integration_tests {
         assert_eq!(config.target_weight, 50.0);
         assert_eq!(config.dt_pin, 5);
         assert_eq!(config.sck_pin, 6);
-        assert_eq!(config.pump_pin, 18);
+        assert_eq!(config.relay_a_pin, 18);
+        assert_eq!(config.relay_b_pin, 19);
         assert_eq!(config.button_pin, 2);
     }
 
@@ -33,7 +34,8 @@ mod integration_tests {
         assert!(config.target_weight > 0.0);
         assert!(config.dt_pin < 40); // 有効なGPIO範囲
         assert!(config.sck_pin < 40);
-        assert!(config.pump_pin < 40);
+        assert!(config.relay_a_pin < 40);
+        assert!(config.relay_b_pin < 40);
         assert!(config.button_pin < 40);
     }
 
@@ -89,7 +91,7 @@ mod integration_tests {
     #[test]
     fn test_system_state_transitions() {
         let idle = SystemState::Idle;
-        let pumping = SystemState::Pumping;
+        let forward = SystemState::Forward;
         let stopping = SystemState::Stopping;
         let error = SystemState::Error("Test error".to_string());
 
@@ -97,9 +99,9 @@ mod integration_tests {
         assert!(!idle.is_error());
         assert_eq!(idle.as_str(), "Idle");
 
-        assert!(pumping.is_active());
-        assert!(!pumping.is_error());
-        assert_eq!(pumping.as_str(), "Pumping");
+        assert!(forward.is_active());
+        assert!(!forward.is_error());
+        assert_eq!(forward.as_str(), "Forward");
 
         assert!(stopping.is_active());
         assert!(!stopping.is_error());
@@ -129,13 +131,13 @@ mod integration_tests {
     #[test]
     fn test_error_handling_properties() {
         use weight_sensor_pump_controller::SystemError;
-        use weight_sensor_pump_controller::errors::{SensorError, PumpError};
+        use weight_sensor_pump_controller::errors::{SensorError, MotorError};
         
         let sensor_error = SystemError::Sensor(SensorError::ReadFailure);
         assert!(sensor_error.is_retryable());
         
-        let pump_error = SystemError::Pump(PumpError::StartFailure);
-        assert!(!pump_error.is_retryable());
+        let motor_error = SystemError::Motor(MotorError::StartFailure);
+        assert!(motor_error.is_retryable());
         
         let config_error = SystemError::Config("Invalid config".to_string());
         assert!(!config_error.is_retryable());

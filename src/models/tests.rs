@@ -28,7 +28,8 @@ mod tests {
         assert_eq!(config.target_weight, 50.0);
         assert_eq!(config.dt_pin, 5);
         assert_eq!(config.sck_pin, 6);
-        assert_eq!(config.pump_pin, 18);
+        assert_eq!(config.relay_a_pin, 18);
+        assert_eq!(config.relay_b_pin, 19);
         assert_eq!(config.button_pin, 2);
     }
     
@@ -53,9 +54,9 @@ mod tests {
         assert!(!idle_state.is_error());
         assert_eq!(idle_state.as_str(), "Idle");
         
-        let pumping_state = SystemState::Pumping;
-        assert!(pumping_state.is_active());
-        assert!(!pumping_state.is_error());
+        let forward_state = SystemState::Forward;
+        assert!(forward_state.is_active());
+        assert!(!forward_state.is_error());
         
         let error_state = SystemState::Error("Test error".to_string());
         assert!(!error_state.is_active());

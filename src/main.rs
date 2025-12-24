@@ -149,7 +149,7 @@ impl SystemController {
         info!("Target Weight: {:.1}g", stats.target_weight);
         info!("Error Count: {}", stats.error_count);
         info!("Button Presses: {}", stats.button_press_count);
-        info!("Pump Runtime: {:?}", stats.pump_runtime);
+        info!("Motor Runtime: {:?}", stats.motor_runtime);
         
         if let Some(uptime) = stats.uptime {
             info!("Session Uptime: {:?}", uptime);
