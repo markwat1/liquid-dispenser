@@ -165,6 +165,7 @@ impl MotorController {
     }
     
     /// 速度を変更（動作中のみ）
+    #[allow(dead_code)]
     pub fn set_speed(&mut self, speed: f64) -> Result<(), MotorError> {
         // 速度の範囲チェック
         if speed < 0.0 || speed > 1.0 {
@@ -258,16 +259,19 @@ impl MotorController {
     }
     
     /// 現在のモーター状態を取得
+    #[allow(dead_code)]
     pub fn current_state(&self) -> &MotorState {
         &self.current_state
     }
     
     /// 現在の速度を取得
+    #[allow(dead_code)]
     pub fn current_speed(&self) -> f64 {
         self.current_speed
     }
     
     /// PWM周波数を設定
+    #[allow(dead_code)]
     pub fn set_frequency(&mut self, frequency: f64) -> Result<(), MotorError> {
         if frequency < 1.0 || frequency > 5000.0 {
             return Err(MotorError::FrequencyOutOfRange(frequency));

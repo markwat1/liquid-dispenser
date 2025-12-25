@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use std::thread;
 
 /// 蠕動ポンプコントローラ
+#[allow(dead_code)]
 pub struct PumpController {
     control_pin: OutputPin,
     is_running: bool,
@@ -11,6 +12,7 @@ pub struct PumpController {
     total_runtime: Duration,
 }
 
+#[allow(dead_code)]
 impl PumpController {
     /// 新しいポンプコントローラを作成
     pub fn new(control_pin_num: u8) -> Result<Self, PumpError> {
@@ -211,6 +213,7 @@ impl PumpStatus {
 }
 
 // Drop実装で安全にリソースを解放
+#[allow(dead_code)]
 impl Drop for PumpController {
     fn drop(&mut self) {
         if self.is_running {

@@ -22,9 +22,11 @@ pub enum SystemError {
     Config(String),
     
     #[error("PWM safety error: {0}")]
+    #[allow(dead_code)]
     PwmSafety(String),
     
     #[error("Sequence error: {0}")]
+    #[allow(dead_code)]
     Sequence(String),
 }
 
@@ -54,6 +56,7 @@ pub enum SensorError {
 
 /// ポンプ制御関連のエラー
 #[derive(Debug, Error)]
+#[allow(dead_code)]
 pub enum PumpError {
     #[error("Failed to start pump")]
     StartFailure,
@@ -84,6 +87,7 @@ pub enum MotorError {
     InvalidSpeed(f64),
     
     #[error("Invalid frequency value: {0}")]
+    #[allow(dead_code)]
     InvalidFrequency(f64),
     
     #[error("Motor start failure")]
@@ -93,9 +97,11 @@ pub enum MotorError {
     StopFailure,
     
     #[error("Motor is already running")]
+    #[allow(dead_code)]
     AlreadyRunning,
     
     #[error("Motor is not running")]
+    #[allow(dead_code)]
     NotRunning,
     
     #[error("GPIO error: {0}")]
