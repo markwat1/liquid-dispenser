@@ -6,9 +6,6 @@ pub enum SystemError {
     #[error("Sensor error: {0}")]
     Sensor(#[from] SensorError),
     
-    #[error("Pump error: {0}")]
-    Pump(#[from] PumpError),
-    
     #[error("Motor error: {0}")]
     Motor(#[from] MotorError),
     
@@ -20,14 +17,6 @@ pub enum SystemError {
     
     #[error("Configuration error: {0}")]
     Config(String),
-    
-    #[error("PWM safety error: {0}")]
-    #[allow(dead_code)]
-    PwmSafety(String),
-    
-    #[error("Sequence error: {0}")]
-    #[allow(dead_code)]
-    Sequence(String),
 }
 
 /// 重量センサー関連のエラー
@@ -54,26 +43,6 @@ pub enum SensorError {
     Gpio(String),
 }
 
-/// ポンプ制御関連のエラー
-#[derive(Debug, Error)]
-#[allow(dead_code)]
-pub enum PumpError {
-    #[error("Failed to start pump")]
-    StartFailure,
-    
-    #[error("Failed to stop pump")]
-    StopFailure,
-    
-    #[error("Pump is already running")]
-    AlreadyRunning,
-    
-    #[error("Pump is not running")]
-    NotRunning,
-    
-    #[error("GPIO error: {0}")]
-    Gpio(String),
-}
-
 /// モーター制御関連のエラー
 #[derive(Debug, Error)]
 pub enum MotorError {
@@ -86,23 +55,11 @@ pub enum MotorError {
     #[error("Invalid speed value: {0}")]
     InvalidSpeed(f64),
     
-    #[error("Invalid frequency value: {0}")]
-    #[allow(dead_code)]
-    InvalidFrequency(f64),
-    
     #[error("Motor start failure")]
     StartFailure,
     
     #[error("Motor stop failure")]
     StopFailure,
-    
-    #[error("Motor is already running")]
-    #[allow(dead_code)]
-    AlreadyRunning,
-    
-    #[error("Motor is not running")]
-    #[allow(dead_code)]
-    NotRunning,
     
     #[error("GPIO error: {0}")]
     Gpio(String),
@@ -141,14 +98,11 @@ impl SystemError {
             SystemError::Sensor(SensorError::OutOfRange { .. }) => ErrorLevel::Warning,
             SystemError::Sensor(SensorError::InvalidReading(_)) => ErrorLevel::Warning,
             SystemError::Sensor(_) => ErrorLevel::Error,
-            SystemError::Pump(_) => ErrorLevel::Critical,
             SystemError::Motor(MotorError::UnsafeState) => ErrorLevel::Critical,
             SystemError::Motor(_) => ErrorLevel::Error,
             SystemError::Button(_) => ErrorLevel::Warning,
             SystemError::Gpio(_) => ErrorLevel::Critical,
             SystemError::Config(_) => ErrorLevel::Error,
-            SystemError::PwmSafety(_) => ErrorLevel::Critical,
-            SystemError::Sequence(_) => ErrorLevel::Error,
         }
     }
     

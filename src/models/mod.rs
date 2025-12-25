@@ -30,16 +30,6 @@ impl MotorState {
     pub fn is_running(&self) -> bool {
         matches!(self, MotorState::Forward(_) | MotorState::Reverse(_))
     }
-    
-    /// 現在の速度を取得（0.0-1.0）
-    #[allow(dead_code)]
-    pub fn speed(&self) -> f64 {
-        match self {
-            MotorState::Stopped => 0.0,
-            MotorState::Forward(speed) => *speed,
-            MotorState::Reverse(speed) => *speed,
-        }
-    }
 }
 
 /// 重量測定データ

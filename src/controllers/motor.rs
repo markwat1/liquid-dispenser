@@ -164,37 +164,6 @@ impl MotorController {
         Ok(())
     }
     
-    /// 速度を変更（動作中のみ）
-    #[allow(dead_code)]
-    pub fn set_speed(&mut self, speed: f64) -> Result<(), MotorError> {
-        // 速度の範囲チェック
-        if speed < 0.0 || speed > 1.0 {
-            return Err(MotorError::InvalidSpeed(speed));
-        }
-        
-        match &self.current_state {
-            MotorState::Forward(_) => {
-                self.pwm_forward.set_duty_cycle(speed)
-                    .map_err(|e| MotorError::PwmControl(e.to_string()))?;
-                self.current_state = MotorState::Forward(speed);
-                self.current_speed = speed;
-                info!("Forward speed changed to {:.1}%", speed * 100.0);
-            },
-            MotorState::Reverse(_) => {
-                self.pwm_reverse.set_duty_cycle(speed)
-                    .map_err(|e| MotorError::PwmControl(e.to_string()))?;
-                self.current_state = MotorState::Reverse(speed);
-                self.current_speed = speed;
-                info!("Reverse speed changed to {:.1}%", speed * 100.0);
-            },
-            MotorState::Stopped => {
-                return Err(MotorError::NotRunning);
-            }
-        }
-        
-        Ok(())
-    }
-    
     /// モーターを停止
     pub fn stop(&mut self) -> Result<(), MotorError> {
         info!("Stopping motor");
@@ -256,56 +225,6 @@ impl MotorController {
         self.start_time = None;
         
         info!("Emergency stop completed");
-    }
-    
-    /// 現在のモーター状態を取得
-    #[allow(dead_code)]
-    pub fn current_state(&self) -> &MotorState {
-        &self.current_state
-    }
-    
-    /// 現在の速度を取得
-    #[allow(dead_code)]
-    pub fn current_speed(&self) -> f64 {
-        self.current_speed
-    }
-    
-    /// PWM周波数を設定
-    #[allow(dead_code)]
-    pub fn set_frequency(&mut self, frequency: f64) -> Result<(), MotorError> {
-        if frequency < 1.0 || frequency > 5000.0 {
-            return Err(MotorError::FrequencyOutOfRange(frequency));
-        }
-        
-        // 現在の状態を保存
-        let was_running = self.is_running();
-        let current_speed = self.current_speed;
-        let current_state = self.current_state.clone();
-        
-        // 一時停止
-        if was_running {
-            self.stop()?;
-        }
-        
-        // 周波数を変更
-        self.pwm_forward.set_frequency(frequency, 0.0)
-            .map_err(|e| MotorError::PwmControl(e.to_string()))?;
-        self.pwm_reverse.set_frequency(frequency, 0.0)
-            .map_err(|e| MotorError::PwmControl(e.to_string()))?;
-        
-        self.pwm_frequency = frequency;
-        
-        // 元の状態に復帰
-        if was_running {
-            match current_state {
-                MotorState::Forward(_) => self.start_forward(current_speed)?,
-                MotorState::Reverse(_) => self.start_reverse(current_speed)?,
-                MotorState::Stopped => {},
-            }
-        }
-        
-        info!("PWM frequency changed to {}Hz", frequency);
-        Ok(())
     }
     
     /// モーターが動作中かチェック

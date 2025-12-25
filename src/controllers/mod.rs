@@ -1,5 +1,4 @@
 pub mod weight_sensor;
-pub mod pump;
 pub mod motor;
 pub mod button;
 pub mod system;

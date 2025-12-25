@@ -208,18 +208,25 @@ mod integration_tests {
         
         let stopped = MotorState::Stopped;
         assert!(!stopped.is_running());
-        assert_eq!(stopped.speed(), 0.0);
         assert_eq!(stopped.as_str(), "Stopped");
         
         let forward = MotorState::Forward(0.8);
         assert!(forward.is_running());
-        assert_eq!(forward.speed(), 0.8);
         assert_eq!(forward.as_str(), "Forward");
+        // 速度は直接パターンマッチで確認
+        match forward {
+            MotorState::Forward(speed) => assert_eq!(speed, 0.8),
+            _ => panic!("Expected Forward state"),
+        }
         
         let reverse = MotorState::Reverse(0.6);
         assert!(reverse.is_running());
-        assert_eq!(reverse.speed(), 0.6);
         assert_eq!(reverse.as_str(), "Reverse");
+        // 速度は直接パターンマッチで確認
+        match reverse {
+            MotorState::Reverse(speed) => assert_eq!(speed, 0.6),
+            _ => panic!("Expected Reverse state"),
+        }
     }
 
     #[test]

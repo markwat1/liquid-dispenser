@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::errors::{SystemError, SensorError, PumpError, ErrorLevel};
+    use crate::errors::{SystemError, SensorError, MotorError, ErrorLevel};
     
     #[test]
     fn test_system_error_levels() {
@@ -13,8 +13,8 @@ mod tests {
         let sensor_read_failure = SystemError::Sensor(SensorError::ReadFailure);
         assert_eq!(sensor_read_failure.level(), ErrorLevel::Error);
         
-        let pump_error = SystemError::Pump(PumpError::StartFailure);
-        assert_eq!(pump_error.level(), ErrorLevel::Critical);
+        let motor_error = SystemError::Motor(MotorError::UnsafeState);
+        assert_eq!(motor_error.level(), ErrorLevel::Critical);
         
         let gpio_error = SystemError::Gpio("Test GPIO error".to_string());
         assert_eq!(gpio_error.level(), ErrorLevel::Critical);
@@ -28,8 +28,8 @@ mod tests {
         let timeout_error = SystemError::Sensor(SensorError::Timeout);
         assert!(timeout_error.is_retryable());
         
-        let non_retryable_error = SystemError::Pump(PumpError::StartFailure);
-        assert!(!non_retryable_error.is_retryable());
+        let motor_error = SystemError::Motor(MotorError::StartFailure);
+        assert!(motor_error.is_retryable());
         
         let config_error = SystemError::Config("Invalid config".to_string());
         assert!(!config_error.is_retryable());
@@ -42,9 +42,9 @@ mod tests {
         assert!(error_string.contains("150"));
         assert!(error_string.contains("100"));
         
-        let pump_error = PumpError::AlreadyRunning;
-        let error_string = format!("{}", pump_error);
-        assert!(error_string.contains("already running"));
+        let motor_error = MotorError::InvalidSpeed(1.5);
+        let error_string = format!("{}", motor_error);
+        assert!(error_string.contains("1.5"));
     }
     
     #[test]
