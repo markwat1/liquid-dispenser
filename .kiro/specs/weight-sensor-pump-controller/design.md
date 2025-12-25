@@ -2,7 +2,7 @@
 
 ## 概要
 
-Raspberry Pi上で動作する重量センサー制御システムは、HX711 ADコンバータを使用した重量測定と2つのリレーによるモーター制御を組み合わせた液体計量装置です。システムはRust言語で実装され、クロスコンパイルによってARM64バイナリとして配布されます。モーターは正転・逆転が可能で、重量安定化処理、目標重量到達後の自動逆転処理を含む完全自動化された計量プロセスを提供します。
+Raspberry Pi上で動作する重量センサー制御システムは、HX711 ADコンバータを使用した重量測定とPWM制御によるモーター制御を組み合わせた液体計量装置です。システムはRust言語で実装され、クロスコンパイルによってARM64バイナリとして配布されます。モーターはPWM信号（最大5kHz）による可変速度制御で正転・逆転が可能で、重量安定化処理、目標重量到達後の自動逆転処理を含む完全自動化された計量プロセスを提供します。
 
 ## アーキテクチャ
 
@@ -51,30 +51,35 @@ impl WeightSensorController {
 ```
 
 ### 2. MotorController
-2つのリレーを使用してモーターの正転・逆転・停止を制御します。
+PWM信号を使用してモーターの正転・逆転・速度制御を行います。
 
 ```rust
 pub struct MotorController {
-    relay_a_pin: u8,  // 正転用リレー
-    relay_b_pin: u8,  // 逆転用リレー
+    pwm_forward_pin: Pwm,   // 正転用PWM出力
+    pwm_reverse_pin: Pwm,   // 逆転用PWM出力
     current_state: MotorState,
+    current_speed: f64,     // 現在の速度（0.0-1.0）
+    pwm_frequency: f64,     // PWM周波数（Hz）
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MotorState {
-    Stopped,    // 両リレーOFF
-    Forward,    // Relay A: ON, Relay B: OFF
-    Reverse,    // Relay A: OFF, Relay B: ON
+    Stopped,           // 両PWM出力0%
+    Forward(f64),      // 正転（速度0.0-1.0）
+    Reverse(f64),      // 逆転（速度0.0-1.0）
 }
 
 impl MotorController {
-    pub fn new(relay_a_pin: u8, relay_b_pin: u8) -> Self;
-    pub fn start_forward(&mut self) -> Result<(), MotorError>;
-    pub fn start_reverse(&mut self) -> Result<(), MotorError>;
+    pub fn new(forward_pin: u8, reverse_pin: u8, frequency: f64) -> Self;
+    pub fn start_forward(&mut self, speed: f64) -> Result<(), MotorError>;
+    pub fn start_reverse(&mut self, speed: f64) -> Result<(), MotorError>;
+    pub fn set_speed(&mut self, speed: f64) -> Result<(), MotorError>;
     pub fn stop(&mut self) -> Result<(), MotorError>;
     pub fn emergency_stop(&mut self);
     pub fn current_state(&self) -> &MotorState;
-    pub fn is_safe_state(&self) -> bool;  // 両リレーが同時ONでないことを確認
+    pub fn current_speed(&self) -> f64;
+    pub fn set_frequency(&mut self, frequency: f64) -> Result<(), MotorError>;
+    pub fn is_safe_state(&self) -> bool;  // 両PWM信号が同時に0%以外でないことを確認
 }
 ```
 
@@ -149,14 +154,17 @@ pub struct SystemConfig {
     pub target_weight: f32,
     pub dt_pin: u8,
     pub sck_pin: u8,
-    pub relay_a_pin: u8,      // 正転用リレー
-    pub relay_b_pin: u8,      // 逆転用リレー
+    pub pwm_forward_pin: u8,      // 正転用PWM出力
+    pub pwm_reverse_pin: u8,      // 逆転用PWM出力
     pub button_pin: u8,
     pub calibration_factor: f32,
     pub moving_average_window: usize,
     pub stabilization_duration: Duration,  // 重量安定化時間（3秒）
     pub reverse_duration: Duration,        // 逆転動作時間（3秒）
     pub weight_tolerance: f32,             // 重量安定判定の許容範囲
+    pub pwm_frequency: f64,                // PWM周波数（最大5kHz）
+    pub forward_speed: f64,                // 正転時の速度（0.0-1.0）
+    pub reverse_speed: f64,                // 逆転時の速度（0.0-1.0）
 }
 ```
 
@@ -183,8 +191,8 @@ pub enum SequencePhase {
 推奨されるGPIO接続：
 - HX711 DT端子 → GPIO 5
 - HX711 SCK端子 → GPIO 6
-- リレーA（正転） → GPIO 18
-- リレーB（逆転） → GPIO 19
+- PWM正転出力 → GPIO 18 (PWM0)
+- PWM逆転出力 → GPIO 19 (PWM1)
 - ボタン → GPIO 2 (プルアップ抵抗付き)
 
 ## 正確性プロパティ
@@ -209,9 +217,9 @@ pub enum SequencePhase {
 *任意の*制御シーケンスにおいて、基準重量設定完了後は正転開始、目標重量到達時は正転停止、その後3秒間の逆転実行、逆転完了後は完全停止の順序で実行される
 **検証対象: 要件 1.3, 1.5, 1.6, 1.7**
 
-### プロパティ 3: リレー制御の安全性
-*任意の*リレー制御において、両リレーOFFで停止、リレーA単独ONで正転、リレーB単独ONで逆転、両リレー同時ONでエラー検知が実行される
-**検証対象: 要件 2.1, 2.2, 2.3, 2.4, 2.5**
+### プロパティ 3: PWM制御の安全性と精度
+*任意の*PWM制御において、デューティ比0%で停止状態維持、1-100%で指定速度動作、両PWM信号同時非ゼロでエラー検知、1Hz-5kHz範囲での周波数動作が実行される
+**検証対象: 要件 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 8.1, 8.2, 8.3, 8.5**
 
 ### プロパティ 4: 重量監視の継続性
 *任意の*システム動作中において、重量センサーは1g精度で継続的に監視を実行し、ノイズに対しては移動平均フィルタで安定化処理を適用する
@@ -225,9 +233,9 @@ pub enum SequencePhase {
 *任意の*エラー条件において、測定範囲外の値や通信エラーに対してシステムは適切なエラー状態を報告し、再試行処理を実行する
 **検証対象: 要件 7.4, 7.5**
 
-### プロパティ 7: 重量測定範囲の妥当性
-*任意の*重量センサー設定において、0-100gの範囲で正確な測定が実行され、コンパイル時に指定された目標重量がバイナリに正しく組み込まれる
-**検証対象: 要件 3.5, 6.4**
+### プロパティ 7: PWM制御範囲の妥当性
+*任意の*PWM制御設定において、0-100%デューティ比範囲と1Hz-5kHz周波数範囲で正確な制御が実行され、コンパイル時に指定された目標重量がバイナリに正しく組み込まれる
+**検証対象: 要件 2.6, 8.1, 8.2, 6.4**
 
 ## エラーハンドリング
 
@@ -241,6 +249,9 @@ pub enum SystemError {
     #[error("Motor error: {0}")]
     Motor(#[from] MotorError),
     
+    #[error("PWM configuration error: {0}")]
+    PwmConfig(String),
+    
     #[error("Button error: {0}")]
     Button(#[from] ButtonError),
     
@@ -250,8 +261,8 @@ pub enum SystemError {
     #[error("Configuration error: {0}")]
     Config(String),
     
-    #[error("Relay safety error: {0}")]
-    RelaySafety(String),
+    #[error("PWM safety error: {0}")]
+    PwmSafety(String),
     
     #[error("Sequence error: {0}")]
     Sequence(String),
@@ -259,11 +270,17 @@ pub enum SystemError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum MotorError {
-    #[error("Relay control error: {0}")]
-    RelayControl(String),
+    #[error("PWM control error: {0}")]
+    PwmControl(String),
     
-    #[error("Unsafe relay state: both relays active")]
+    #[error("Unsafe PWM state: both PWM signals active")]
     UnsafeState,
+    
+    #[error("Invalid speed value: {0}")]
+    InvalidSpeed(f64),
+    
+    #[error("Invalid frequency value: {0}")]
+    InvalidFrequency(f64),
     
     #[error("Motor start failure")]
     StartFailure,
@@ -273,6 +290,9 @@ pub enum MotorError {
     
     #[error("GPIO error: {0}")]
     Gpio(String),
+    
+    #[error("PWM frequency out of range: {0} Hz (max 5000 Hz)")]
+    FrequencyOutOfRange(f64),
 }
 ```
 
@@ -281,8 +301,10 @@ pub enum MotorError {
 2. **範囲外値**: エラーログ出力後、前回の有効値を使用
 3. **ハードウェア障害**: 安全停止後、エラー状態で待機
 4. **設定エラー**: 起動時にバリデーション、不正値は既定値で代替
-5. **リレー安全エラー**: 両リレー同時ON検知時は即座に緊急停止
-6. **シーケンスエラー**: 不正な状態遷移時は安全状態に復帰
+5. **PWM安全エラー**: 両PWM信号同時非ゼロ検知時は即座に緊急停止
+6. **周波数範囲エラー**: 5kHz超過時は最大値に制限、1Hz未満時は最小値に制限
+7. **速度範囲エラー**: 0-100%範囲外の値は最近傍値に制限
+8. **シーケンスエラー**: 不正な状態遷移時は安全状態に復帰
 
 ## テスト戦略
 
@@ -312,3 +334,6 @@ pub enum MotorError {
 - クロスコンパイル後のバイナリテスト
 - 完全な制御シーケンスのテスト（安定化→正転→逆転→停止）
 - 緊急停止機能のテスト
+### プロパティ 8: 重量測定範囲の妥当性
+*任意の*重量センサー設定において、0-100gの範囲で正確な測定が実行される
+**検証対象: 要件 3.5**

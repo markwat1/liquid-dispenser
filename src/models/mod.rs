@@ -8,12 +8,12 @@ mod tests;
 /// モーター状態
 #[derive(Debug, Clone, PartialEq)]
 pub enum MotorState {
-    /// 停止状態（両リレーOFF）
+    /// 停止状態（両PWM出力0%）
     Stopped,
-    /// 正転状態（Relay A: ON, Relay B: OFF）
-    Forward,
-    /// 逆転状態（Relay A: OFF, Relay B: ON）
-    Reverse,
+    /// 正転状態（速度0.0-1.0）
+    Forward(f64),
+    /// 逆転状態（速度0.0-1.0）
+    Reverse(f64),
 }
 
 impl MotorState {
@@ -21,14 +21,23 @@ impl MotorState {
     pub fn as_str(&self) -> &str {
         match self {
             MotorState::Stopped => "Stopped",
-            MotorState::Forward => "Forward",
-            MotorState::Reverse => "Reverse",
+            MotorState::Forward(_) => "Forward",
+            MotorState::Reverse(_) => "Reverse",
         }
     }
     
     /// 状態が動作中かどうか
     pub fn is_running(&self) -> bool {
-        matches!(self, MotorState::Forward | MotorState::Reverse)
+        matches!(self, MotorState::Forward(_) | MotorState::Reverse(_))
+    }
+    
+    /// 現在の速度を取得（0.0-1.0）
+    pub fn speed(&self) -> f64 {
+        match self {
+            MotorState::Stopped => 0.0,
+            MotorState::Forward(speed) => *speed,
+            MotorState::Reverse(speed) => *speed,
+        }
     }
 }
 
@@ -75,10 +84,10 @@ pub struct SystemConfig {
     pub dt_pin: u8,
     /// HX711 SCK端子のGPIOピン番号
     pub sck_pin: u8,
-    /// リレーA（正転）のGPIOピン番号
-    pub relay_a_pin: u8,
-    /// リレーB（逆転）のGPIOピン番号
-    pub relay_b_pin: u8,
+    /// PWM正転出力のGPIOピン番号
+    pub pwm_forward_pin: u8,
+    /// PWM逆転出力のGPIOピン番号
+    pub pwm_reverse_pin: u8,
     /// ボタンのGPIOピン番号
     pub button_pin: u8,
     /// 重量センサーの校正係数
@@ -91,6 +100,12 @@ pub struct SystemConfig {
     pub reverse_duration: Duration,
     /// 重量安定判定の許容範囲
     pub weight_tolerance: f32,
+    /// PWM周波数（最大5kHz）
+    pub pwm_frequency: f64,
+    /// 正転時の速度（0.0-1.0）
+    pub forward_speed: f64,
+    /// 逆転時の速度（0.0-1.0）
+    pub reverse_speed: f64,
 }
 
 impl Default for SystemConfig {
@@ -99,14 +114,17 @@ impl Default for SystemConfig {
             target_weight: 50.0,
             dt_pin: 5,
             sck_pin: 6,
-            relay_a_pin: 18,
-            relay_b_pin: 19,
+            pwm_forward_pin: 18,
+            pwm_reverse_pin: 19,
             button_pin: 2,
             calibration_factor: 1.0,
             moving_average_window: 5,
             stabilization_duration: Duration::from_secs(3),
             reverse_duration: Duration::from_secs(3),
             weight_tolerance: 0.5,
+            pwm_frequency: 1000.0,  // 1kHz default
+            forward_speed: 0.8,     // 80% speed
+            reverse_speed: 0.6,     // 60% speed for reverse
         }
     }
 }
@@ -132,14 +150,17 @@ impl SystemConfig {
             target_weight: env!("COMPILED_TARGET_WEIGHT").parse().unwrap_or(50.0),
             dt_pin: env!("COMPILED_DT_PIN").parse().unwrap_or(5),
             sck_pin: env!("COMPILED_SCK_PIN").parse().unwrap_or(6),
-            relay_a_pin: env!("COMPILED_RELAY_A_PIN").parse().unwrap_or(18),
-            relay_b_pin: env!("COMPILED_RELAY_B_PIN").parse().unwrap_or(19),
+            pwm_forward_pin: env!("COMPILED_PWM_FORWARD_PIN").parse().unwrap_or(18),
+            pwm_reverse_pin: env!("COMPILED_PWM_REVERSE_PIN").parse().unwrap_or(19),
             button_pin: env!("COMPILED_BUTTON_PIN").parse().unwrap_or(2),
             calibration_factor: env!("COMPILED_CALIBRATION_FACTOR").parse().unwrap_or(1.0),
             moving_average_window: env!("COMPILED_MOVING_AVERAGE_WINDOW").parse().unwrap_or(5),
             stabilization_duration: Duration::from_secs(3),
             reverse_duration: Duration::from_secs(3),
             weight_tolerance: 0.5,
+            pwm_frequency: env!("COMPILED_PWM_FREQUENCY").parse().unwrap_or(1000.0),
+            forward_speed: env!("COMPILED_FORWARD_SPEED").parse().unwrap_or(0.8),
+            reverse_speed: env!("COMPILED_REVERSE_SPEED").parse().unwrap_or(0.6),
         }
     }
     
@@ -167,15 +188,15 @@ impl SystemConfig {
             }
         }
         
-        if let Ok(pin) = std::env::var("RELAY_A_PIN") {
+        if let Ok(pin) = std::env::var("PWM_FORWARD_PIN") {
             if let Ok(pin) = pin.parse::<u8>() {
-                config.relay_a_pin = pin;
+                config.pwm_forward_pin = pin;
             }
         }
         
-        if let Ok(pin) = std::env::var("RELAY_B_PIN") {
+        if let Ok(pin) = std::env::var("PWM_REVERSE_PIN") {
             if let Ok(pin) = pin.parse::<u8>() {
-                config.relay_b_pin = pin;
+                config.pwm_reverse_pin = pin;
             }
         }
         
@@ -194,6 +215,24 @@ impl SystemConfig {
         if let Ok(window) = std::env::var("MOVING_AVERAGE_WINDOW") {
             if let Ok(window) = window.parse::<usize>() {
                 config.moving_average_window = window;
+            }
+        }
+        
+        if let Ok(freq) = std::env::var("PWM_FREQUENCY") {
+            if let Ok(freq) = freq.parse::<f64>() {
+                config.pwm_frequency = freq;
+            }
+        }
+        
+        if let Ok(speed) = std::env::var("FORWARD_SPEED") {
+            if let Ok(speed) = speed.parse::<f64>() {
+                config.forward_speed = speed;
+            }
+        }
+        
+        if let Ok(speed) = std::env::var("REVERSE_SPEED") {
+            if let Ok(speed) = speed.parse::<f64>() {
+                config.reverse_speed = speed;
             }
         }
         
@@ -221,13 +260,27 @@ impl SystemConfig {
         }
         
         // GPIO番号の重複チェック
-        let pins = vec![self.dt_pin, self.sck_pin, self.relay_a_pin, self.relay_b_pin, self.button_pin];
+        let pins = vec![self.dt_pin, self.sck_pin, self.pwm_forward_pin, self.pwm_reverse_pin, self.button_pin];
         let mut unique_pins = pins.clone();
         unique_pins.sort();
         unique_pins.dedup();
         
         if pins.len() != unique_pins.len() {
             return Err("GPIO pin numbers must be unique".to_string());
+        }
+        
+        // PWM周波数の範囲チェック
+        if self.pwm_frequency < 1.0 || self.pwm_frequency > 5000.0 {
+            return Err(format!("PWM frequency must be between 1Hz and 5kHz, got: {}Hz", self.pwm_frequency));
+        }
+        
+        // 速度の範囲チェック
+        if self.forward_speed < 0.0 || self.forward_speed > 1.0 {
+            return Err(format!("Forward speed must be between 0.0 and 1.0, got: {}", self.forward_speed));
+        }
+        
+        if self.reverse_speed < 0.0 || self.reverse_speed > 1.0 {
+            return Err(format!("Reverse speed must be between 0.0 and 1.0, got: {}", self.reverse_speed));
         }
         
         Ok(())

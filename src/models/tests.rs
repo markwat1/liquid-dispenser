@@ -28,9 +28,12 @@ mod tests {
         assert_eq!(config.target_weight, 50.0);
         assert_eq!(config.dt_pin, 5);
         assert_eq!(config.sck_pin, 6);
-        assert_eq!(config.relay_a_pin, 18);
-        assert_eq!(config.relay_b_pin, 19);
+        assert_eq!(config.pwm_forward_pin, 18);
+        assert_eq!(config.pwm_reverse_pin, 19);
         assert_eq!(config.button_pin, 2);
+        assert_eq!(config.pwm_frequency, 1000.0);
+        assert_eq!(config.forward_speed, 0.8);
+        assert_eq!(config.reverse_speed, 0.6);
     }
     
     #[test]
@@ -45,6 +48,16 @@ mod tests {
         let mut duplicate_pin_config = SystemConfig::default();
         duplicate_pin_config.sck_pin = duplicate_pin_config.dt_pin;
         assert!(duplicate_pin_config.validate().is_err());
+        
+        // PWM周波数の範囲チェック
+        let mut invalid_freq_config = SystemConfig::default();
+        invalid_freq_config.pwm_frequency = 6000.0; // 5kHz超過
+        assert!(invalid_freq_config.validate().is_err());
+        
+        // 速度の範囲チェック
+        let mut invalid_speed_config = SystemConfig::default();
+        invalid_speed_config.forward_speed = 1.5; // 1.0超過
+        assert!(invalid_speed_config.validate().is_err());
     }
     
     #[test]

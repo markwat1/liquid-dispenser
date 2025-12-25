@@ -21,8 +21,8 @@ pub enum SystemError {
     #[error("Configuration error: {0}")]
     Config(String),
     
-    #[error("Relay safety error: {0}")]
-    RelaySafety(String),
+    #[error("PWM safety error: {0}")]
+    PwmSafety(String),
     
     #[error("Sequence error: {0}")]
     Sequence(String),
@@ -74,11 +74,17 @@ pub enum PumpError {
 /// モーター制御関連のエラー
 #[derive(Debug, Error)]
 pub enum MotorError {
-    #[error("Relay control error: {0}")]
-    RelayControl(String),
+    #[error("PWM control error: {0}")]
+    PwmControl(String),
     
-    #[error("Unsafe relay state: both relays active")]
+    #[error("Unsafe PWM state: both PWM signals active")]
     UnsafeState,
+    
+    #[error("Invalid speed value: {0}")]
+    InvalidSpeed(f64),
+    
+    #[error("Invalid frequency value: {0}")]
+    InvalidFrequency(f64),
     
     #[error("Motor start failure")]
     StartFailure,
@@ -94,6 +100,9 @@ pub enum MotorError {
     
     #[error("GPIO error: {0}")]
     Gpio(String),
+    
+    #[error("PWM frequency out of range: {0} Hz (max 5000 Hz)")]
+    FrequencyOutOfRange(f64),
 }
 
 /// ボタン制御関連のエラー
@@ -132,7 +141,7 @@ impl SystemError {
             SystemError::Button(_) => ErrorLevel::Warning,
             SystemError::Gpio(_) => ErrorLevel::Critical,
             SystemError::Config(_) => ErrorLevel::Error,
-            SystemError::RelaySafety(_) => ErrorLevel::Critical,
+            SystemError::PwmSafety(_) => ErrorLevel::Critical,
             SystemError::Sequence(_) => ErrorLevel::Error,
         }
     }

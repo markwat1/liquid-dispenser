@@ -12,6 +12,9 @@ pub struct SystemController {
     button: ButtonController,
     config: SystemConfig,
     state: SystemState,
+    base_weight: Option<f32>,  // 安定化後の基準重量
+    stabilization_timer: Option<Instant>,
+    reverse_timer: Option<Instant>,
     last_weight_reading: Option<WeightReading>,
     error_count: u32,
     start_time: Option<Instant>,
@@ -36,7 +39,11 @@ impl SystemController {
             config.moving_average_window,
         )?;
         
-        let motor = MotorController::new(config.relay_a_pin, config.relay_b_pin)?;
+        let motor = MotorController::new(
+            config.pwm_forward_pin, 
+            config.pwm_reverse_pin, 
+            config.pwm_frequency
+        )?;
         let button = ButtonController::new(config.button_pin)?;
         
         let mut controller = Self {
@@ -45,6 +52,9 @@ impl SystemController {
             button,
             config,
             state: SystemState::Idle,
+            base_weight: None,
+            stabilization_timer: None,
+            reverse_timer: None,
             last_weight_reading: None,
             error_count: 0,
             start_time: None,
@@ -69,8 +79,8 @@ impl SystemController {
         let pins = vec![
             (config.dt_pin, "HX711 DT"),
             (config.sck_pin, "HX711 SCK"),
-            (config.relay_a_pin, "Motor Relay A"),
-            (config.relay_b_pin, "Motor Relay B"),
+            (config.pwm_forward_pin, "PWM Forward"),
+            (config.pwm_reverse_pin, "PWM Reverse"),
             (config.button_pin, "Button"),
         ];
         
@@ -100,23 +110,11 @@ impl SystemController {
             debug!("SCK pin (GPIO {}) set to LOW", config.sck_pin);
         }
         
-        {
-            // リレーA制御ピン（出力）をLOWに設定
-            let mut relay_a_pin = gpio.get(config.relay_a_pin)
-                .map_err(|e| SystemError::Gpio(e.to_string()))?
-                .into_output();
-            relay_a_pin.set_low();
-            debug!("Relay A control pin (GPIO {}) set to LOW", config.relay_a_pin);
-        }
+        // PWM出力ピンは自動的に初期化されるため、手動設定は不要
+        // MotorControllerの初期化時に0%デューティサイクルで設定される
         
-        {
-            // リレーB制御ピン（出力）をLOWに設定
-            let mut relay_b_pin = gpio.get(config.relay_b_pin)
-                .map_err(|e| SystemError::Gpio(e.to_string()))?
-                .into_output();
-            relay_b_pin.set_low();
-            debug!("Relay B control pin (GPIO {}) set to LOW", config.relay_b_pin);
-        }
+        info!("PWM pins (GPIO {}, {}) will be initialized by MotorController", 
+              config.pwm_forward_pin, config.pwm_reverse_pin);
         
         // 入力ピンの設定確認
         {
@@ -146,11 +144,14 @@ impl SystemController {
         // 1. 健全性チェック
         self.health_check()?;
         
-        // 2. 重量センサーの初期化
+        // 2. PWM設定の妥当性チェック
+        self.validate_pwm_settings()?;
+        
+        // 3. 重量センサーの初期化
         info!("Initializing weight sensor");
         thread::sleep(Duration::from_millis(500)); // センサー安定化待機
         
-        // 3. 初期重量測定
+        // 4. 初期重量測定
         match self.weight_sensor.read_weight() {
             Ok(reading) => {
                 self.last_weight_reading = Some(reading.clone());
@@ -162,20 +163,57 @@ impl SystemController {
             }
         }
         
-        // 4. モーターの初期状態確認
+        // 5. モーターの初期状態確認
         if self.motor.is_running() {
             warn!("Motor was running at startup, stopping");
             self.motor.emergency_stop();
         }
         
-        // 5. ボタンの初期状態確認
+        // 6. ボタンの初期状態確認
         self.button.reset_press_count();
         
-        // 6. システム状態を待機に設定
+        // 7. システム状態を待機に設定
         self.state = SystemState::Idle;
         self.error_count = 0;
         
         info!("System startup sequence completed successfully");
+        Ok(())
+    }
+    
+    /// PWM設定の妥当性をチェック
+    fn validate_pwm_settings(&mut self) -> Result<(), SystemError> {
+        info!("Validating PWM settings");
+        
+        // PWM周波数の範囲チェック
+        if self.config.pwm_frequency < 1.0 || self.config.pwm_frequency > 5000.0 {
+            return Err(SystemError::Config(format!(
+                "PWM frequency out of range: {}Hz (must be 1-5000Hz)", 
+                self.config.pwm_frequency
+            )));
+        }
+        
+        // 速度設定の範囲チェック
+        if self.config.forward_speed < 0.0 || self.config.forward_speed > 1.0 {
+            return Err(SystemError::Config(format!(
+                "Forward speed out of range: {} (must be 0.0-1.0)", 
+                self.config.forward_speed
+            )));
+        }
+        
+        if self.config.reverse_speed < 0.0 || self.config.reverse_speed > 1.0 {
+            return Err(SystemError::Config(format!(
+                "Reverse speed out of range: {} (must be 0.0-1.0)", 
+                self.config.reverse_speed
+            )));
+        }
+        
+        // モーターの安全状態チェック
+        if !self.motor.is_safe_state() {
+            warn!("Motor not in safe state at startup, performing emergency stop");
+            self.motor.emergency_stop();
+        }
+        
+        info!("PWM settings validation completed");
         Ok(())
     }
     
@@ -305,8 +343,17 @@ impl SystemController {
         
         // 状態に応じた処理
         match &self.state {
+            SystemState::WeightStabilizing => {
+                self.process_stabilization()?;
+            }
             SystemState::Forward => {
-                self.check_target_weight()?;
+                self.process_forward_operation()?;
+            }
+            SystemState::TargetReached => {
+                self.start_reverse_operation()?;
+            }
+            SystemState::Reverse => {
+                self.process_reverse_operation()?;
             }
             SystemState::Stopping => {
                 self.finalize_stop()?;
@@ -329,7 +376,7 @@ impl SystemController {
             SystemState::Idle => {
                 self.start_sequence()?;
             }
-            SystemState::WeightStabilizing | SystemState::Forward | SystemState::Reverse => {
+            SystemState::WeightStabilizing | SystemState::Forward | SystemState::Reverse | SystemState::TargetReached => {
                 self.stop_sequence()?;
             }
             SystemState::Stopping => {
@@ -355,10 +402,101 @@ impl SystemController {
         
         // 重量安定化状態に遷移
         self.state = SystemState::WeightStabilizing;
-        self.start_time = Some(Instant::now());
+        self.stabilization_timer = Some(Instant::now());
+        self.base_weight = None;
         self.error_count = 0;
         
         info!("Weight stabilization started");
+        Ok(())
+    }
+    
+    /// 重量安定化処理
+    fn process_stabilization(&mut self) -> Result<(), SystemError> {
+        if let Some(start_time) = self.stabilization_timer {
+            if start_time.elapsed() >= self.config.stabilization_duration {
+                // 安定化時間が経過した場合
+                match self.weight_sensor.stabilize_weight(
+                    self.config.stabilization_duration,
+                    self.config.weight_tolerance
+                ) {
+                    Ok(base_weight) => {
+                        self.base_weight = Some(base_weight);
+                        info!("Weight stabilized at {:.1}g, starting forward operation", base_weight);
+                        self.start_forward_operation()?;
+                    }
+                    Err(e) => {
+                        warn!("Weight stabilization failed: {}, retrying", e);
+                        // 安定化を再開
+                        self.stabilization_timer = Some(Instant::now());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    
+    /// 正転動作を開始
+    fn start_forward_operation(&mut self) -> Result<(), SystemError> {
+        info!("Starting forward operation");
+        
+        self.motor.start_forward(self.config.forward_speed)?;
+        self.state = SystemState::Forward;
+        self.stabilization_timer = None;
+        
+        Ok(())
+    }
+    
+    /// 正転動作中の処理
+    fn process_forward_operation(&mut self) -> Result<(), SystemError> {
+        if let Some(base_weight) = self.base_weight {
+            match self.weight_sensor.monitor_weight_for_target(
+                self.config.target_weight, 
+                base_weight
+            ) {
+                Ok(target_reached) => {
+                    if target_reached {
+                        info!("Target weight reached, stopping forward operation");
+                        self.motor.stop()?;
+                        self.state = SystemState::TargetReached;
+                    }
+                }
+                Err(e) => {
+                    warn!("Weight monitoring failed: {}", e);
+                    self.error_count += 1;
+                    if self.error_count > 3 {
+                        return Err(SystemError::Sensor(e));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    
+    /// 逆転動作を開始
+    fn start_reverse_operation(&mut self) -> Result<(), SystemError> {
+        info!("Starting reverse operation");
+        
+        self.motor.start_reverse(self.config.reverse_speed)?;
+        self.state = SystemState::Reverse;
+        self.reverse_timer = Some(Instant::now());
+        
+        Ok(())
+    }
+    
+    /// 逆転動作中の処理
+    fn process_reverse_operation(&mut self) -> Result<(), SystemError> {
+        if let Some(start_time) = self.reverse_timer {
+            if start_time.elapsed() >= self.config.reverse_duration {
+                info!("Reverse operation completed, stopping motor");
+                self.motor.stop()?;
+                self.state = SystemState::Completed;
+                self.reverse_timer = None;
+                
+                // 完了後は待機状態に戻る
+                thread::sleep(Duration::from_millis(500));
+                self.finalize_stop()?;
+            }
+        }
         Ok(())
     }
     
@@ -371,6 +509,10 @@ impl SystemController {
         // モーターを安全に停止
         self.motor.safe_stop(Duration::from_secs(5))?;
         
+        // タイマーをリセット
+        self.stabilization_timer = None;
+        self.reverse_timer = None;
+        
         self.finalize_stop()?;
         
         Ok(())
@@ -380,6 +522,9 @@ impl SystemController {
     fn finalize_stop(&mut self) -> Result<(), SystemError> {
         self.state = SystemState::Idle;
         self.start_time = None;
+        self.base_weight = None;
+        self.stabilization_timer = None;
+        self.reverse_timer = None;
         
         if let Some(reading) = &self.last_weight_reading {
             info!("Control sequence completed. Final weight: {:.1}g", reading.value);
@@ -404,19 +549,7 @@ impl SystemController {
         Ok(())
     }
     
-    /// 目標重量に達したかチェック
-    fn check_target_weight(&mut self) -> Result<(), SystemError> {
-        if let Some(reading) = &self.last_weight_reading {
-            if reading.is_stable && reading.value >= self.config.target_weight {
-                info!("Target weight reached: {:.1}g >= {:.1}g", 
-                      reading.value, self.config.target_weight);
-                self.stop_sequence()?;
-            }
-        }
-        
-        Ok(())
-    }
-    
+
     /// エラーを処理
     #[allow(dead_code)]
     fn handle_error(&mut self, error: SystemError) -> Result<(), SystemError> {
@@ -477,6 +610,9 @@ impl SystemController {
         
         self.state = SystemState::Idle;
         self.start_time = None;
+        self.base_weight = None;
+        self.stabilization_timer = None;
+        self.reverse_timer = None;
         self.error_count = 0;
         self.last_weight_reading = None;
         

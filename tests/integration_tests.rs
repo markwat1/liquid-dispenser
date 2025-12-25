@@ -12,9 +12,12 @@ mod integration_tests {
         assert_eq!(config.target_weight, 50.0);
         assert_eq!(config.dt_pin, 5);
         assert_eq!(config.sck_pin, 6);
-        assert_eq!(config.relay_a_pin, 18);
-        assert_eq!(config.relay_b_pin, 19);
+        assert_eq!(config.pwm_forward_pin, 18);
+        assert_eq!(config.pwm_reverse_pin, 19);
         assert_eq!(config.button_pin, 2);
+        assert_eq!(config.pwm_frequency, 1000.0);
+        assert_eq!(config.forward_speed, 0.8);
+        assert_eq!(config.reverse_speed, 0.6);
     }
 
     #[test]
@@ -34,9 +37,12 @@ mod integration_tests {
         assert!(config.target_weight > 0.0);
         assert!(config.dt_pin < 40); // 有効なGPIO範囲
         assert!(config.sck_pin < 40);
-        assert!(config.relay_a_pin < 40);
-        assert!(config.relay_b_pin < 40);
+        assert!(config.pwm_forward_pin < 40);
+        assert!(config.pwm_reverse_pin < 40);
         assert!(config.button_pin < 40);
+        assert!(config.pwm_frequency >= 1.0 && config.pwm_frequency <= 5000.0);
+        assert!(config.forward_speed >= 0.0 && config.forward_speed <= 1.0);
+        assert!(config.reverse_speed >= 0.0 && config.reverse_speed <= 1.0);
     }
 
     #[test]
@@ -143,3 +149,127 @@ mod integration_tests {
         assert!(!config_error.is_retryable());
     }
 }
+    #[test]
+    fn test_pwm_configuration_validation() {
+        let mut config = SystemConfig::default();
+        
+        // Valid PWM configuration
+        assert!(config.validate().is_ok());
+        
+        // Invalid PWM frequency (too high)
+        config.pwm_frequency = 6000.0;
+        assert!(config.validate().is_err());
+        
+        // Invalid PWM frequency (too low)
+        config.pwm_frequency = 0.5;
+        assert!(config.validate().is_err());
+        
+        // Reset to valid frequency
+        config.pwm_frequency = 2500.0;
+        assert!(config.validate().is_ok());
+        
+        // Invalid forward speed (too high)
+        config.forward_speed = 1.5;
+        assert!(config.validate().is_err());
+        
+        // Invalid reverse speed (negative)
+        config.forward_speed = 0.8;
+        config.reverse_speed = -0.1;
+        assert!(config.validate().is_err());
+        
+        // Valid speeds
+        config.reverse_speed = 0.6;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_pwm_pin_configuration() {
+        let config = SystemConfig::default();
+        
+        // Check that PWM pins are different
+        assert_ne!(config.pwm_forward_pin, config.pwm_reverse_pin);
+        
+        // Check that PWM pins are valid GPIO numbers
+        assert!(config.pwm_forward_pin < 40);
+        assert!(config.pwm_reverse_pin < 40);
+        
+        // Check that PWM pins don't conflict with other pins
+        assert_ne!(config.pwm_forward_pin, config.dt_pin);
+        assert_ne!(config.pwm_forward_pin, config.sck_pin);
+        assert_ne!(config.pwm_forward_pin, config.button_pin);
+        assert_ne!(config.pwm_reverse_pin, config.dt_pin);
+        assert_ne!(config.pwm_reverse_pin, config.sck_pin);
+        assert_ne!(config.pwm_reverse_pin, config.button_pin);
+    }
+
+    #[test]
+    fn test_motor_state_with_speed() {
+        use weight_sensor_pump_controller::models::MotorState;
+        
+        let stopped = MotorState::Stopped;
+        assert!(!stopped.is_running());
+        assert_eq!(stopped.speed(), 0.0);
+        assert_eq!(stopped.as_str(), "Stopped");
+        
+        let forward = MotorState::Forward(0.8);
+        assert!(forward.is_running());
+        assert_eq!(forward.speed(), 0.8);
+        assert_eq!(forward.as_str(), "Forward");
+        
+        let reverse = MotorState::Reverse(0.6);
+        assert!(reverse.is_running());
+        assert_eq!(reverse.speed(), 0.6);
+        assert_eq!(reverse.as_str(), "Reverse");
+    }
+
+    #[test]
+    fn test_environment_variable_override() {
+        // Test PWM frequency override
+        std::env::set_var("PWM_FREQUENCY", "2000.0");
+        let config = SystemConfig::load_with_priority();
+        assert_eq!(config.pwm_frequency, 2000.0);
+        std::env::remove_var("PWM_FREQUENCY");
+        
+        // Test speed overrides
+        std::env::set_var("FORWARD_SPEED", "0.9");
+        std::env::set_var("REVERSE_SPEED", "0.7");
+        let config = SystemConfig::load_with_priority();
+        assert_eq!(config.forward_speed, 0.9);
+        assert_eq!(config.reverse_speed, 0.7);
+        std::env::remove_var("FORWARD_SPEED");
+        std::env::remove_var("REVERSE_SPEED");
+        
+        // Test PWM pin overrides
+        std::env::set_var("PWM_FORWARD_PIN", "12");
+        std::env::set_var("PWM_REVERSE_PIN", "13");
+        let config = SystemConfig::load_with_priority();
+        assert_eq!(config.pwm_forward_pin, 12);
+        assert_eq!(config.pwm_reverse_pin, 13);
+        std::env::remove_var("PWM_FORWARD_PIN");
+        std::env::remove_var("PWM_REVERSE_PIN");
+    }
+
+    #[test]
+    fn test_system_state_extended() {
+        use weight_sensor_pump_controller::models::SystemState;
+        
+        let stabilizing = SystemState::WeightStabilizing;
+        assert!(stabilizing.is_active());
+        assert!(!stabilizing.is_error());
+        assert_eq!(stabilizing.as_str(), "WeightStabilizing");
+        
+        let target_reached = SystemState::TargetReached;
+        assert!(target_reached.is_active());
+        assert!(!target_reached.is_error());
+        assert_eq!(target_reached.as_str(), "TargetReached");
+        
+        let reverse = SystemState::Reverse;
+        assert!(reverse.is_active());
+        assert!(!reverse.is_error());
+        assert_eq!(reverse.as_str(), "Reverse");
+        
+        let completed = SystemState::Completed;
+        assert!(!completed.is_active());
+        assert!(!completed.is_error());
+        assert_eq!(completed.as_str(), "Completed");
+    }

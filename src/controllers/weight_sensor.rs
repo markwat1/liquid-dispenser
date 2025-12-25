@@ -3,6 +3,7 @@ use crate::models::{WeightReading, MovingAverage};
 use rppal::gpio::{Gpio, InputPin, OutputPin};
 use std::thread;
 use std::time::{Duration, Instant};
+use log::{info, warn, debug};
 
 /// HX711重量センサーコントローラ
 pub struct WeightSensorController {
@@ -238,6 +239,82 @@ impl WeightSensorController {
         }
         
         Ok(())
+    }
+    
+    /// 重量安定化処理を実行（3秒間の継続測定）
+    pub fn stabilize_weight(&mut self, duration: Duration, tolerance: f32) -> Result<f32, SensorError> {
+        info!("Starting weight stabilization for {:?}", duration);
+        
+        let start_time = Instant::now();
+        let mut readings = Vec::new();
+        
+        // フィルタをリセット
+        self.reset_filter();
+        
+        // 指定時間内で継続的に測定
+        while start_time.elapsed() < duration {
+            match self.read_weight() {
+                Ok(reading) => {
+                    readings.push(reading.value);
+                    debug!("Stabilization reading: {:.1}g", reading.value);
+                }
+                Err(e) => {
+                    warn!("Failed to read weight during stabilization: {}", e);
+                    // エラーが発生しても継続
+                }
+            }
+            
+            thread::sleep(Duration::from_millis(100)); // 100ms間隔で測定
+        }
+        
+        if readings.is_empty() {
+            return Err(SensorError::ReadFailure);
+        }
+        
+        // 安定性をチェック
+        if self.check_weight_stability(&readings, tolerance) {
+            let average_weight = readings.iter().sum::<f32>() / readings.len() as f32;
+            info!("Weight stabilized at {:.1}g", average_weight);
+            Ok(average_weight)
+        } else {
+            warn!("Weight did not stabilize within tolerance {:.1}g", tolerance);
+            Err(SensorError::CalibrationFailed) // 安定化失敗
+        }
+    }
+    
+    /// 重量の安定性をチェック
+    pub fn check_weight_stability(&self, readings: &[f32], tolerance: f32) -> bool {
+        if readings.len() < 5 {
+            return false; // 最低5回の測定が必要
+        }
+        
+        let average = readings.iter().sum::<f32>() / readings.len() as f32;
+        
+        // 全ての測定値が許容範囲内かチェック
+        for &reading in readings {
+            if (reading - average).abs() > tolerance {
+                return false;
+            }
+        }
+        
+        true
+    }
+    
+    /// 継続的な重量監視（目標重量到達チェック用）
+    pub fn monitor_weight_for_target(&mut self, target_weight: f32, base_weight: f32) -> Result<bool, SensorError> {
+        let reading = self.read_weight()?;
+        
+        if reading.is_stable {
+            let net_weight = reading.value - base_weight;
+            debug!("Net weight: {:.1}g (target: {:.1}g)", net_weight, target_weight);
+            
+            if net_weight >= target_weight {
+                info!("Target weight reached: {:.1}g >= {:.1}g", net_weight, target_weight);
+                return Ok(true);
+            }
+        }
+        
+        Ok(false)
     }
     
     /// センサーの健全性チェック

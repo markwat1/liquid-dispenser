@@ -16,8 +16,8 @@ pub struct ConfigFile {
 pub struct GpioConfig {
     pub dt_pin: Option<u8>,
     pub sck_pin: Option<u8>,
-    pub relay_a_pin: Option<u8>,
-    pub relay_b_pin: Option<u8>,
+    pub pwm_forward_pin: Option<u8>,
+    pub pwm_reverse_pin: Option<u8>,
     pub button_pin: Option<u8>,
 }
 
@@ -30,6 +30,9 @@ pub struct SensorConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PumpConfig {
+    pub pwm_frequency: Option<f64>,
+    pub forward_speed: Option<f64>,
+    pub reverse_speed: Option<f64>,
     pub max_runtime: Option<u64>, // 秒
     pub safety_timeout: Option<u64>, // 秒
 }
@@ -65,8 +68,8 @@ impl ConfigFile {
             gpio: Some(GpioConfig {
                 dt_pin: Some(5),
                 sck_pin: Some(6),
-                relay_a_pin: Some(18),
-                relay_b_pin: Some(19),
+                pwm_forward_pin: Some(18),
+                pwm_reverse_pin: Some(19),
                 button_pin: Some(2),
             }),
             sensor: Some(SensorConfig {
@@ -75,6 +78,9 @@ impl ConfigFile {
                 max_weight: Some(100.0),
             }),
             pump: Some(PumpConfig {
+                pwm_frequency: Some(1000.0),
+                forward_speed: Some(0.8),
+                reverse_speed: Some(0.6),
                 max_runtime: Some(300), // 5分
                 safety_timeout: Some(5),
             }),
@@ -111,11 +117,11 @@ impl SystemConfig {
             if let Some(pin) = gpio.sck_pin {
                 config.sck_pin = pin;
             }
-            if let Some(pin) = gpio.relay_a_pin {
-                config.relay_a_pin = pin;
+            if let Some(pin) = gpio.pwm_forward_pin {
+                config.pwm_forward_pin = pin;
             }
-            if let Some(pin) = gpio.relay_b_pin {
-                config.relay_b_pin = pin;
+            if let Some(pin) = gpio.pwm_reverse_pin {
+                config.pwm_reverse_pin = pin;
             }
             if let Some(pin) = gpio.button_pin {
                 config.button_pin = pin;
@@ -128,6 +134,18 @@ impl SystemConfig {
             }
             if let Some(window) = sensor.moving_average_window {
                 config.moving_average_window = window;
+            }
+        }
+        
+        if let Some(pump) = config_file.pump {
+            if let Some(freq) = pump.pwm_frequency {
+                config.pwm_frequency = freq;
+            }
+            if let Some(speed) = pump.forward_speed {
+                config.forward_speed = speed;
+            }
+            if let Some(speed) = pump.reverse_speed {
+                config.reverse_speed = speed;
             }
         }
         
@@ -174,15 +192,15 @@ impl SystemConfig {
             }
         }
         
-        if let Ok(pin) = std::env::var("RELAY_A_PIN") {
+        if let Ok(pin) = std::env::var("PWM_FORWARD_PIN") {
             if let Ok(pin) = pin.parse::<u8>() {
-                config.relay_a_pin = pin;
+                config.pwm_forward_pin = pin;
             }
         }
         
-        if let Ok(pin) = std::env::var("RELAY_B_PIN") {
+        if let Ok(pin) = std::env::var("PWM_REVERSE_PIN") {
             if let Ok(pin) = pin.parse::<u8>() {
-                config.relay_b_pin = pin;
+                config.pwm_reverse_pin = pin;
             }
         }
         
@@ -201,6 +219,24 @@ impl SystemConfig {
         if let Ok(window) = std::env::var("MOVING_AVERAGE_WINDOW") {
             if let Ok(window) = window.parse::<usize>() {
                 config.moving_average_window = window;
+            }
+        }
+        
+        if let Ok(freq) = std::env::var("PWM_FREQUENCY") {
+            if let Ok(freq) = freq.parse::<f64>() {
+                config.pwm_frequency = freq;
+            }
+        }
+        
+        if let Ok(speed) = std::env::var("FORWARD_SPEED") {
+            if let Ok(speed) = speed.parse::<f64>() {
+                config.forward_speed = speed;
+            }
+        }
+        
+        if let Ok(speed) = std::env::var("REVERSE_SPEED") {
+            if let Ok(speed) = speed.parse::<f64>() {
+                config.reverse_speed = speed;
             }
         }
         
